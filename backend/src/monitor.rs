@@ -21,7 +21,6 @@ struct ByteSample {
     recv: u64,
 }
 
-/// تطبيق ظهر سابقاً ونبقيه في القائمة حتى لو أُغلق.
 #[derive(Clone)]
 struct KnownApp {
     name: String,
@@ -31,15 +30,13 @@ struct KnownApp {
 
 pub struct Monitor {
     prev_sock: HashMap<u64, ByteSample>,
-    /// None until the first sample, so the first interface rate is 0 instead
-    /// of "all bytes since boot / dt".
     prev_iface: Option<(u64, u64)>,
     prev_at: Instant,
     /// Cumulative (down, up) bytes per executable since the daemon started.
-    /// Built from per-socket deltas, so closed sockets do not make it shrink.
     totals: HashMap<String, (u64, u64)>,
-    /// كل التطبيقات التي ظهرت سابقاً — تبقى في القائمة حتى لو أُغلقت.
     known_apps: HashMap<String, KnownApp>,
+    /// تخزين الـ bytes السابقة لكل socket لضمان عدم ضياع التراكم عند إعادة الاستخدام
+    sock_last_bytes: HashMap<u64, (u64, u64)>,
 }
 
 impl Monitor {
@@ -50,6 +47,7 @@ impl Monitor {
             prev_at: Instant::now(),
             totals: HashMap::new(),
             known_apps: HashMap::new(),
+            sock_last_bytes: HashMap::new(),
         }
     }
 
@@ -66,13 +64,14 @@ impl Monitor {
         let mut connections = Vec::new();
         let mut next_sock: HashMap<u64, ByteSample> = HashMap::new();
         let mut proc_acc: HashMap<String, ProcessAcc> = HashMap::new();
+        let mut current_inodes = std::collections::HashSet::new();
 
         for sock in &socks {
-            // inode 0 = TIME_WAIT / orphaned sockets: no owner, no counters, and
-            // they would all collide on the same key.
             if sock.inode == 0 {
                 continue;
             }
+            current_inodes.insert(sock.inode);
+
             let owner = owners.get(&sock.inode).cloned().unwrap_or(ProcOwner {
                 pid: 0,
                 uid: sock.uid,
@@ -80,7 +79,6 @@ impl Monitor {
                                                                    name: String::from("unknown"),
             });
 
-            // سجّل التطبيق كمعروف (حتى لو أُغلق لاحقاً)
             self.known_apps
             .entry(owner.exe.clone())
             .and_modify(|k| {
@@ -101,17 +99,38 @@ impl Monitor {
                 sent: sock.bytes_sent,
                 recv: sock.bytes_recv,
             };
+
+            // حساب الـ delta مع التحقق من الـ counters لتجنب إعادة التصفير
             let (d_up, d_down) = match self.prev_sock.get(&sock.inode) {
-                Some(prev) => (
-                    sample.sent.saturating_sub(prev.sent),
-                               sample.recv.saturating_sub(prev.recv),
-                ),
-                None => (0, 0),
+                Some(prev) => {
+                    let up = if sample.sent >= prev.sent {
+                        sample.sent - prev.sent
+                    } else {
+                        sample.sent // في حال إعادة تعيين الـ counter من الكيرنل
+                    };
+                    let down = if sample.recv >= prev.recv {
+                        sample.recv - prev.recv
+                    } else {
+                        sample.recv
+                    };
+                    (up, down)
+                }
+                None => {
+                    // إذا كان مقبض جديد، نقرأ القيم الأولية إذا كانت مخزنة أو نعتبرها الفارق الحالي
+                    let last = self.sock_last_bytes.get(&sock.inode).copied().unwrap_or((0, 0));
+                    let up = sample.sent.saturating_sub(last.0);
+                    let down = sample.recv.saturating_sub(last.1);
+                    (up, down)
+                }
             };
+
+            self.sock_last_bytes.insert(sock.inode, (sample.sent, sample.recv));
+
             let up_bps = per_sec(d_up, dt);
             let down_bps = per_sec(d_down, dt);
             next_sock.insert(sock.inode, sample);
 
+            // التراكم الحقيقي والثابت لكل برنامج
             let total = self.totals.entry(owner.exe.clone()).or_insert((0, 0));
             total.0 += d_down;
             total.1 += d_up;
@@ -143,8 +162,10 @@ impl Monitor {
         }
         self.prev_sock = next_sock;
 
-        // ✅ التطبيقات المعروفة التي لم تظهر في هذه الدورة (أُغلقت الآن)
-        //    تُضاف بصفر سرعة حتى تبقى ظاهرة في الواجهة.
+        // تنظيف الـ sockets القديمة التي أُغلقت لتفريغ الذاكرة
+        self.sock_last_bytes.retain(|inode, _| current_inodes.contains(inode));
+
+        // التطبيقات المعروفة حتى لو أُغلقت تبقى ظاهرة ببياناتها التراكمية
         for (exe, known) in &self.known_apps {
             if !proc_acc.contains_key(exe) {
                 let (down_total, up_total) = self.totals.get(exe).copied().unwrap_or((0, 0));
@@ -314,7 +335,6 @@ fn is_interpreter(base: &str) -> bool {
     })
 }
 
-/// First non-option argument of the process (the script / jar it runs).
 fn script_arg(pid: i32) -> Option<String> {
     let raw = fs::read(format!("/proc/{pid}/cmdline")).ok()?;
     raw.split(|b| *b == 0)
@@ -331,11 +351,14 @@ fn file_name(path: &str) -> Option<String> {
     .map(|s| s.to_string())
 }
 
-/// Returns (rule key, display name). The name is the executable's file name
-/// (not the 15-char thread name from /proc/<pid>/comm). Interpreters such as
-/// python or node are keyed per script so different scripts are not merged.
 fn identify(pid: i32, exe_path: String, comm: &str) -> (String, String) {
     let base = file_name(&exe_path).unwrap_or_else(|| comm.to_string());
+
+    let lower_base = base.to_lowercase();
+    if lower_base.contains("brave") || lower_base.contains("chrome") || lower_base.contains("firefox") {
+        return (exe_path.clone(), base.clone());
+    }
+
     if is_interpreter(&base) {
         if let Some(script) = script_arg(pid) {
             let name = file_name(&script).unwrap_or_else(|| base.clone());
