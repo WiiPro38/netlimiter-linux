@@ -1,0 +1,13 @@
+backend/target/
+backend/vendor/
+target/
+**/__pycache__/
+*.pyc
+*.rpm
+*.tar.gz
+*.tar.bz2
+*.o
+*~
+.idea/
+.vscode/
+.DS_Store

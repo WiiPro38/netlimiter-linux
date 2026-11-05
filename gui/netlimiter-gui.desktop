@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=NetLimiter Fedora
+Name[ar]=مراقب الإنترنت NetLimiter
+Comment=Monitor and limit per-application bandwidth
+Comment[ar]=مراقبة وتحديد سرعة الإنترنت لكل تطبيق
+Exec=netlimiter-gui
+Icon=network-workgroup
+Terminal=false
+Categories=Network;Monitor;System;
+StartupNotify=true
+Keywords=bandwidth;limit;nethogs;traffic;

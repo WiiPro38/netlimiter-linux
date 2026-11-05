@@ -1,0 +1,9 @@
+Package: netlimiter
+Version: 0.2.0
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: Maamar Nachef <you@example.com>
+Depends: nftables, python3-gi, python3-gobject, gir1.2-gtk-4.0, systemd
+Description: Network traffic monitor and rate limiter for Linux
+ A local-first network monitoring and management tool using nftables and GTK4.

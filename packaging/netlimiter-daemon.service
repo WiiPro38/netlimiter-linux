@@ -1,0 +1,20 @@
+[Unit]
+Description=NetLimiter Network Monitoring Daemon
+Documentation=man:netlimiterd(8)
+After=network.target nftables.service
+Wants=nftables.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/netlimiterd
+Restart=on-failure
+RestartSec=3
+# نحتاج الوصول إلى /proc و /run و /var/lib
+# لا نحتاج حماية إضافية صارمة لأن nft يتطلب صلاحيات واسعة
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=false
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target
