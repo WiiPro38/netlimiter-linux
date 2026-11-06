@@ -49,6 +49,9 @@ impl AppState {
             privileged: crate::monitor::privileged(),
             nft_ok: false,
             paused: false,
+            iface_down_total: 0,
+            iface_up_total: 0,
+            capture_ok: false,
         };
         Arc::new(Self {
             monitor: Mutex::new(Monitor::new()),
@@ -564,6 +567,9 @@ fn sample_once(state: &AppState) {
         last.connections = sample.connections;
         last.iface_down_bps = sample.iface_down_bps;
         last.iface_up_bps = sample.iface_up_bps;
+        last.iface_down_total = sample.iface_down_total;
+        last.iface_up_total = sample.iface_up_total;
+        last.capture_ok = sample.capture_ok;
         last.privileged = crate::monitor::privileged();
         last.paused = state.paused.load(Ordering::SeqCst);
     }
