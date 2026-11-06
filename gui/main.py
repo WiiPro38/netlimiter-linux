@@ -490,6 +490,8 @@ class ConnItem(GObject.Object):
     local = GObject.Property(type=str, default="")
     proto = GObject.Property(type=str, default="")
     state = GObject.Property(type=str, default="")
+    down = GObject.Property(type=GObject.TYPE_INT64, default=0)
+    up = GObject.Property(type=GObject.TYPE_INT64, default=0)
     down_txt = GObject.Property(type=str, default="")
     up_txt = GObject.Property(type=str, default="")
 
@@ -1026,11 +1028,13 @@ X-GNOME-Autostart-enabled=true
         conn_gesture.connect("released", self.on_conn_right_click)
         self.conn_view.add_controller(conn_gesture)
 
-        self.col_ip_dest = self._text_col(s["dest_ip"], "remote", True, None, 0, 0.0)
-        self.col_ip_proto = self._text_col(s["proto"], "proto", False, None, 50, 0.5)
-        self.col_ip_state = self._text_col(s["state"], "state", False, None, 55, 0.5)
-        self.col_ip_down = self._text_col(s["down"], "down_txt", False, "nl-down", 65, 0.5)
-        self.col_ip_up = self._text_col(s["up"], "up_txt", False, "nl-up", 65, 0.5)
+        # sort_key must be callable (it used to be True/False, which raised
+        # TypeError as soon as a column header was clicked).
+        self.col_ip_dest = self._text_col(s["dest_ip"], "remote", lambda i: i.remote, None, 0, 0.0)
+        self.col_ip_proto = self._text_col(s["proto"], "proto", lambda i: i.proto, None, 50, 0.5)
+        self.col_ip_state = self._text_col(s["state"], "state", lambda i: i.state, None, 55, 0.5)
+        self.col_ip_down = self._text_col(s["down"], "down_txt", lambda i: i.down, "nl-down", 65, 0.5)
+        self.col_ip_up = self._text_col(s["up"], "up_txt", lambda i: i.up, "nl-up", 65, 0.5)
 
         self.col_ip_dest.set_expand(True)
 
@@ -1131,8 +1135,12 @@ X-GNOME-Autostart-enabled=true
             "down_bps": iface_down,
             "up_bps": iface_up,
             "connections": sum(int(p.get("connections", 0)) for p in snap.get("processes", [])),
-            "down_total": sum(int(p.get("down_total", 0)) for p in snap.get("processes", [])),
-            "up_total": sum(int(p.get("up_total", 0)) for p in snap.get("processes", [])),
+            # Interface totals are the true system-wide numbers; the sum of
+            # per-app totals is only a fallback for an older daemon.
+            "down_total": int(snap.get("iface_down_total") or 0)
+            or sum(int(p.get("down_total", 0)) for p in snap.get("processes", [])),
+            "up_total": int(snap.get("iface_up_total") or 0)
+            or sum(int(p.get("up_total", 0)) for p in snap.get("processes", [])),
         }
         self.global_item.fill(global_proc, global_rule)
 
@@ -1150,6 +1158,7 @@ X-GNOME-Autostart-enabled=true
             f"↑ {format_rate(iface_up)}",
             s["root"] if snap.get("privileged") else s["no_root"],
             "nft OK" if snap.get("nft_ok") else "nft N/A",
+            "pkt OK" if snap.get("capture_ok") else "pkt N/A (TCP only)",
             f"⏸ {s['paused']}" if paused else f"▶ {s['running']}",
             f"{len(snap.get('processes', []))} Apps",
         ]
@@ -1275,6 +1284,8 @@ X-GNOME-Autostart-enabled=true
                     local=str(c.get("local", "")),
                     proto=str(c.get("proto", "")).upper(),
                     state=str(c.get("state", "")),
+                    down=int(c.get("down_bps", 0)),
+                    up=int(c.get("up_bps", 0)),
                     down_txt=format_rate(c.get("down_bps", 0)),
                     up_txt=format_rate(c.get("up_bps", 0)),
                 )
