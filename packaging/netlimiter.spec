@@ -13,13 +13,15 @@ BuildRequires:  python3-devel
 BuildRequires:  systemd-rpm-macros
 
 Requires:       nftables
+Requires:       iproute
+Requires:       iproute-tc
 Requires:       python3-gobject
 Requires:       gtk4
 Requires:       libadwaita
 
 %description
 NetLimiter is a network monitoring and rate-limiting tool for Fedora.
-It provides per-application bandwidth control via nftables, with a
+It provides per-application bandwidth control via nftables and tc, with a
 GTK4/libadwaita front-end and interactive desktop notifications.
 
 %prep
@@ -73,6 +75,10 @@ install -m 644 packaging/90-netlimiter.preset %{buildroot}%{_presetdir}/90-netli
 %systemd_postun_with_restart netlimiter-daemon.service
 
 %changelog
+* Fri Nov 06 2026 Mohamed <ziramziram1994@gmail.com> - 1.0.0-1
+- Strict speed limiting with tc (HTB + IFB); nftables only as fallback
+- Per-application packet-level traffic counters
+
 * Mon Nov 04 2024 Your Name <you@example.com> - 0.2.0-1
 - Add interactive desktop notifications with block/allow/limit actions
 - Keep closed apps visible in the UI
