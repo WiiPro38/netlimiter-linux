@@ -16,6 +16,7 @@ use crate::monitor::Monitor;
 use crate::nft::{self, NftState};
 use crate::protocol::{ConnectionRow, Request, Response, Rule, RuleAction, Snapshot};
 use crate::rules::RuleStore;
+use crate::tc;
 
 /// Longest accepted request line (a request is a few hundred bytes).
 const MAX_LINE: u64 = 64 * 1024;
@@ -75,6 +76,7 @@ pub fn socket_path() -> String {
 
 pub fn shutdown() {
     nft::cleanup();
+    tc::cleanup();
     {
         let mut guard = lock(notifier_cell());
         *guard = None;
@@ -470,6 +472,7 @@ fn dispatch(state: &AppState, req: Request) -> Response {
             state.paused.store(enabled, Ordering::SeqCst);
             if enabled {
                 nft::cleanup();
+                tc::cleanup();
             } else {
                 apply_rules(state);
             }
@@ -595,7 +598,11 @@ fn apply_rules(state: &AppState) {
         (store.rules.clone(), store.lock_all)
     };
     let nft_ok = if crate::monitor::privileged() {
-        match nft::apply(&mut lock(&state.nft), lock_all, &rules, &connections) {
+        let mut nft_state = lock(&state.nft);
+        nft_state.refresh(&rules, &connections);
+        // Strict shaping first; the nft policer is only a fallback.
+        let tc_ok = tc::apply(lock_all, &rules, &|exe| nft_state.ips_for(exe)).is_ok();
+        match nft::apply(&mut nft_state, lock_all, !tc_ok, &rules, &connections) {
             Ok(()) => true,
             Err(err) => {
                 eprintln!("nft: {err}");
