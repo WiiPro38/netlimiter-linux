@@ -1,3 +1,4 @@
+mod capture;
 mod monitor;
 mod netlink;
 mod nft;
