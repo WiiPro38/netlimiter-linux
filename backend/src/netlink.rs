@@ -65,11 +65,15 @@ fn nlmsg_align(len: usize) -> usize {
     (len + NLMSG_ALIGNTO - 1) & !(NLMSG_ALIGNTO - 1)
 }
 
+/// Reads a `T` from `buf` at `offset` without requiring alignment.
+/// Returns None if the buffer is too short.
 fn read_at<T: Copy>(buf: &[u8], offset: usize) -> Option<T> {
     let end = offset.checked_add(mem::size_of::<T>())?;
     if end > buf.len() {
         return None;
     }
+    // SAFETY: bounds checked above; T is plain-old-data (repr(C), Copy) and
+    // read_unaligned has no alignment requirement.
     Some(unsafe { ptr::read_unaligned(buf.as_ptr().add(offset) as *const T) })
 }
 
@@ -90,6 +94,7 @@ pub fn dump_sockets() -> io::Result<Vec<SockInfo>> {
     let mut out = Vec::new();
     for family in [AF_INET as u8, AF_INET6 as u8] {
         for proto in [IPPROTO_TCP as u8, IPPROTO_UDP as u8] {
+            // UDP diag can be unavailable on some kernels; keep going on any error.
             let _ = dump_family_proto(family, proto, &mut out);
         }
     }
@@ -97,6 +102,7 @@ pub fn dump_sockets() -> io::Result<Vec<SockInfo>> {
 }
 
 fn dump_family_proto(family: u8, proto: u8, out: &mut Vec<SockInfo>) -> io::Result<()> {
+    // SAFETY: plain libc calls; fd is closed on every path below.
     let fd = unsafe { socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_SOCK_DIAG) };
     if fd < 0 {
         return Err(io::Error::last_os_error());
@@ -133,6 +139,7 @@ fn build_request(family: u8, proto: u8) -> Vec<u8> {
             cookie: [INET_DIAG_NOCOOKIE, INET_DIAG_NOCOOKIE],
         },
     };
+    // SAFETY: buf has exactly hdr_len + size_of::<InetDiagReqV2>() bytes.
     unsafe {
         ptr::write_unaligned(buf.as_mut_ptr() as *mut nlmsghdr, hdr);
         ptr::write_unaligned(buf.as_mut_ptr().add(hdr_len) as *mut InetDiagReqV2, req);
@@ -204,28 +211,21 @@ fn parse_diag(payload: &[u8], proto: u8, out: &mut Vec<SockInfo>) {
 
     let mut bytes_sent = 0u64;
     let mut bytes_recv = 0u64;
-
-    if proto == IPPROTO_TCP as u8 {
-        let nla_size = mem::size_of::<NlAttr>();
-        let mut attr_off = nlmsg_align(mem::size_of::<InetDiagMsg>());
-        while attr_off + nla_size <= payload.len() {
-            let Some(nla) = read_at::<NlAttr>(payload, attr_off) else {
-                break;
-            };
-            let nla_len = nla.nla_len as usize;
-            if nla_len < nla_size || attr_off + nla_len > payload.len() {
-                break;
-            }
-            if (nla.nla_type & 0x3fff) == INET_DIAG_INFO as u16 {
-                let data = &payload[attr_off + nla_size..attr_off + nla_len];
-                parse_tcp_info(data, &mut bytes_sent, &mut bytes_recv);
-            }
-            attr_off += nlmsg_align(nla_len);
+    let nla_size = mem::size_of::<NlAttr>();
+    let mut attr_off = nlmsg_align(mem::size_of::<InetDiagMsg>());
+    while attr_off + nla_size <= payload.len() {
+        let Some(nla) = read_at::<NlAttr>(payload, attr_off) else {
+            break;
+        };
+        let nla_len = nla.nla_len as usize;
+        if nla_len < nla_size || attr_off + nla_len > payload.len() {
+            break;
         }
-    } else {
-        // دعم حركة اتصالات UDP / QUIC (تصفح إنستغرام والفيديو) عبر طوابير الكيرنل
-        bytes_sent = msg.wqueue as u64;
-        bytes_recv = msg.rqueue as u64;
+        if (nla.nla_type & 0x3fff) == INET_DIAG_INFO as u16 {
+            let data = &payload[attr_off + nla_size..attr_off + nla_len];
+            parse_tcp_info(data, &mut bytes_sent, &mut bytes_recv);
+        }
+        attr_off += nlmsg_align(nla_len);
     }
 
     out.push(SockInfo {
@@ -249,6 +249,8 @@ fn read_u64(data: &[u8], at: usize) -> u64 {
 }
 
 fn parse_tcp_info(data: &[u8], sent: &mut u64, recv: &mut u64) {
+    // offsetof(struct tcp_info, ...) on current kernels:
+    // tcpi_bytes_acked=120, tcpi_bytes_received=128, tcpi_bytes_sent=200
     if data.len() >= 136 {
         *sent = sane_counter(read_u64(data, 120));
         *recv = sane_counter(read_u64(data, 128));
@@ -272,9 +274,12 @@ fn sane_counter(value: u64) -> u64 {
 fn addr_from(family: u8, words: &[u32; 4], port_be: u16) -> Option<SocketAddr> {
     let port = u16::from_be(port_be);
     if family == AF_INET as u8 {
+        // The kernel stores the address in network byte order inside a native u32.
         let ip = Ipv4Addr::from(u32::from_be(words[0]));
         Some(SocketAddr::from((ip, port)))
     } else if family == AF_INET6 as u8 {
+        // Each word already holds 4 raw network-order bytes: copy them back
+        // unchanged (to_ne_bytes), NOT to_be_bytes, which swaps them on x86.
         let mut octets = [0u8; 16];
         for (i, w) in words.iter().enumerate() {
             octets[i * 4..i * 4 + 4].copy_from_slice(&w.to_ne_bytes());
