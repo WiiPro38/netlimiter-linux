@@ -17,6 +17,19 @@ pub struct NftState {
 }
 
 impl NftState {
+    /// Updates the per-app remote-address memory (also used by tc.rs).
+    pub fn refresh(&mut self, rules: &[Rule], connections: &[ConnectionRow]) {
+        self.remember(rules, connections, Instant::now());
+    }
+
+    /// Remote addresses currently attributed to `exe`.
+    pub fn ips_for(&self, exe: &str) -> BTreeSet<IpAddr> {
+        self.seen
+            .get(exe)
+            .map(|m| m.keys().copied().collect())
+            .unwrap_or_default()
+    }
+
     fn remember(&mut self, rules: &[Rule], connections: &[ConnectionRow], now: Instant) {
         // Drop state of apps that no longer have an enabled rule.
         self.seen
@@ -36,14 +49,18 @@ impl NftState {
 
 /// Applies the ruleset. The nft script is only reloaded when its text changed,
 /// so `limit rate` counters are not reset every second.
+///
+/// Speed limits are enforced by tc (tc.rs). `limit_fallback` is true only when
+/// tc could not be set up; then the (non-strict) nft policer is used instead.
 pub fn apply(
     state: &mut NftState,
     lock_all: bool,
+    limit_fallback: bool,
     rules: &[Rule],
     connections: &[ConnectionRow],
 ) -> Result<(), String> {
     state.remember(rules, connections, Instant::now());
-    let script = render(lock_all, rules, &state.seen);
+    let script = render(lock_all, limit_fallback, rules, &state.seen);
     if script == state.last_script {
         return Ok(());
     }
@@ -95,7 +112,7 @@ enum Direction {
     Up,
 }
 
-fn render(lock_all: bool, rules: &[Rule], seen: &HashMap<String, HashMap<IpAddr, Instant>>) -> String {
+fn render(lock_all: bool, limit_fallback: bool, rules: &[Rule], seen: &HashMap<String, HashMap<IpAddr, Instant>>) -> String {
     let mut s = String::from("table inet netlimiter\ndelete table inet netlimiter\ntable inet netlimiter {\n");
 
     // البحث عن القاعدة العامة (إن وجدت ومفعلة)
@@ -116,13 +133,11 @@ fn render(lock_all: bool, rules: &[Rule], seen: &HashMap<String, HashMap<IpAddr,
                         s.push_str("    drop\n");
                     }
                     RuleAction::Limit => {
-                        let down_kbps = if dir == Direction::Down { rule.down_kbps } else { None };
-                        let up_kbps = if dir == Direction::Up { rule.up_kbps } else { None };
                         let kbps = match dir {
                             Direction::Down => rule.down_kbps,
                             Direction::Up => rule.up_kbps,
                         };
-                        if let Some(kbps) = kbps.filter(|v| *v > 0) {
+                        if let Some(kbps) = kbps.filter(|v| limit_fallback && *v > 0) {
                             // تحويل الكيلوبايت إلى بايت في الثانية لتحديد دقيق جداً
                             let bytes_per_sec = kbps * 1024;
                             // ضبط الـ burst ليكون ضيقاً جداً لفرض الحد بصرامة
@@ -143,7 +158,7 @@ fn render(lock_all: bool, rules: &[Rule], seen: &HashMap<String, HashMap<IpAddr,
                 .get(&rule.exe)
                 .map(|m| m.keys().copied().collect())
                 .unwrap_or_default();
-                append_rule(&mut s, rule, &ips, dir);
+                append_rule(&mut s, rule, &ips, dir, limit_fallback);
             }
         }
         s.push_str("  }\n");
@@ -152,7 +167,7 @@ fn render(lock_all: bool, rules: &[Rule], seen: &HashMap<String, HashMap<IpAddr,
     s
 }
 
-fn append_rule(s: &mut String, rule: &Rule, ips: &BTreeSet<IpAddr>, dir: Direction) {
+fn append_rule(s: &mut String, rule: &Rule, ips: &BTreeSet<IpAddr>, dir: Direction, limit_fallback: bool) {
     let mut v4 = Vec::new();
     let mut v6 = Vec::new();
     for ip in ips {
@@ -173,7 +188,7 @@ fn append_rule(s: &mut String, rule: &Rule, ips: &BTreeSet<IpAddr>, dir: Directi
                 Direction::Down => rule.down_kbps,
                 Direction::Up => rule.up_kbps,
             };
-            if let Some(kbps) = kbps.filter(|v| *v > 0) {
+            if let Some(kbps) = kbps.filter(|v| limit_fallback && *v > 0) {
                 let burst = (kbps / 4).max(32);
                 let action = format!("limit rate over {kbps} kbytes/second burst {burst} kbytes drop");
                 emit_match(s, dir, &v4, &v6, &action);
