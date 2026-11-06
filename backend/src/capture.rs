@@ -39,6 +39,22 @@ pub struct FlowKey {
 /// (download bytes, upload bytes) per flow.
 pub type FlowBytes = HashMap<FlowKey, (u64, u64)>;
 
+/// Snapshot of the tc/IFB state, refreshed every flush.
+#[derive(Default)]
+struct Taps {
+    ifb: i32,
+    shaped: Vec<i32>,
+}
+
+impl Taps {
+    fn current() -> Self {
+        Self {
+            ifb: crate::tc::ifb_index(),
+            shaped: crate::tc::shaped_down(),
+        }
+    }
+}
+
 pub struct Capture {
     shared: Arc<Mutex<FlowBytes>>,
     active: Arc<AtomicBool>,
@@ -115,6 +131,11 @@ fn run(shared: Arc<Mutex<FlowBytes>>, active: Arc<AtomicBool>) {
         );
     }
     let lo_index = unsafe { libc::if_nametoindex(b"lo\0".as_ptr() as *const libc::c_char) } as i32;
+    // Download shaping (tc.rs) redirects ingress to an IFB device. Every such
+    // packet then shows up three times: on the NIC (before tc), on the IFB
+    // (after shaping, as "outgoing") and again on the NIC (re-injected). We
+    // count it once, on the IFB, which also makes the GUI show the shaped rate.
+    let mut taps = Taps::default();
 
     active.store(true, Ordering::Relaxed);
     eprintln!("capture: packet counting active");
@@ -142,7 +163,7 @@ fn run(shared: Arc<Mutex<FlowBytes>>, active: Arc<AtomicBool>) {
         if n > 0 {
             let real_len = n as u64;
             let have = (n as usize).min(buf.len());
-            handle_packet(&sll, &buf[..have], real_len, lo_index, &mut local);
+            handle_packet(&sll, &buf[..have], real_len, lo_index, &taps, &mut local);
         } else if n < 0 {
             let err = io::Error::last_os_error();
             match err.kind() {
@@ -156,6 +177,7 @@ fn run(shared: Arc<Mutex<FlowBytes>>, active: Arc<AtomicBool>) {
 
         if last_flush.elapsed() >= FLUSH_EVERY {
             last_flush = Instant::now();
+            taps = Taps::current();
             if !local.is_empty() {
                 let mut guard = shared.lock().unwrap_or_else(|e| e.into_inner());
                 if guard.len() > MAX_FLOWS {
@@ -176,12 +198,21 @@ fn handle_packet(
     data: &[u8],
     real_len: u64,
     lo_index: i32,
+    taps: &Taps,
     out: &mut FlowBytes,
 ) {
     if sll.sll_pkttype == PKT_OTHERHOST || sll.sll_ifindex == lo_index {
         return;
     }
-    let outgoing = sll.sll_pkttype == PKT_OUTGOING;
+    let mut outgoing = sll.sll_pkttype == PKT_OUTGOING;
+    if sll.sll_ifindex == taps.ifb {
+        if taps.shaped.is_empty() {
+            return;
+        }
+        outgoing = false; // leaving the IFB = download
+    } else if !outgoing && taps.shaped.contains(&sll.sll_ifindex) {
+        return; // counted on the IFB instead
+    }
     let eth = u16::from_be(sll.sll_protocol);
     let Some((proto, src, sport, dst, dport)) = parse_ip(eth, data) else {
         return;
