@@ -59,6 +59,15 @@ pub struct Snapshot {
     pub nft_ok: bool,
     #[serde(default)]
     pub paused: bool,
+    /// Bytes through all non-loopback interfaces since the daemon started.
+    #[serde(default)]
+    pub iface_down_total: u64,
+    #[serde(default)]
+    pub iface_up_total: u64,
+    /// True when per-app numbers come from the packet counter (accurate);
+    /// false when only the TCP-only tcp_info fallback is available.
+    #[serde(default)]
+    pub capture_ok: bool,
 }
 
 #[derive(Debug, Deserialize)]
