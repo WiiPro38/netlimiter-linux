@@ -1,5 +1,5 @@
 Name:           netlimiter
-Version:        0.2.0
+Version:        1.0.0
 Release:        1%{?dist}
 Summary:        Network limiter and monitor for Fedora
 
