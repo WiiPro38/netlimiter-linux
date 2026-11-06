@@ -5,6 +5,7 @@ mod nft;
 mod protocol;
 mod rules;
 mod server;
+mod tc;
 
 use std::thread;
 
@@ -30,6 +31,10 @@ fn install_signal_handler() {
 
 fn main() {
     install_signal_handler();
+    if monitor::privileged() {
+        // Leftover shapers of a previous run that did not exit cleanly.
+        tc::cleanup();
+    }
     let state = server::AppState::new();
     let sampler_state = std::sync::Arc::clone(&state);
     thread::spawn(move || server::sampler_loop(sampler_state));
