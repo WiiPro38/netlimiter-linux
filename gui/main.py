@@ -1,18 +1,22 @@
 #!/usr/bin/python3
 """NetLimiter-Linux - GTK4 / libadwaita front-end (Complete Edition with Autostart & Privacy Policy)."""
 import json
+import math
 import os
 import socket
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
+gi.require_version("Graphene", "1.0")
+gi.require_version("Gsk", "4.0")
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Graphene, Gsk, Gtk, Pango
 
 SOCKET_CANDIDATES = (
     "/run/netlimiter/netlimiter.sock",
@@ -22,26 +26,51 @@ SOCKET_CANDIDATES = (
 )
 
 CSS = """
-.nl-toolbar { padding: 6px 10px; background: rgba(0, 0, 0, 0.02); border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
-.nl-table cell { padding: 4px 6px; }
-.nl-table row:nth-child(even) { background-color: rgba(255, 255, 255, 0.02); }
+/* ---- toolbar / table ---- */
+.nl-toolbar { padding: 8px 12px; background: alpha(currentColor, 0.025); border-bottom: 1px solid alpha(currentColor, 0.08); }
+.nl-toolbar button { border-radius: 8px; }
+.nl-table { background: transparent; }
+.nl-table > header > button { font-weight: 700; font-size: 0.8em; letter-spacing: 0.04em; opacity: 0.75; }
+.nl-table cell { padding: 5px 8px; }
+.nl-table row { transition: background-color 120ms ease; }
+.nl-table row:nth-child(even) { background-color: alpha(currentColor, 0.02); }
 .nl-table row:nth-child(odd) { background-color: transparent; }
-.nl-table row:hover { background-color: rgba(255, 255, 255, 0.06); }
-.nl-table row:selected { background-color: rgba(53, 132, 228, 0.3); }
+.nl-table row:hover { background-color: alpha(currentColor, 0.06); }
+.nl-table row:selected { background-color: alpha(#3584e4, 0.30); }
 
-.nl-down { color: #57e389; font-weight: 600; font-size: 0.85em; }
-.nl-up { color: #ff7800; font-weight: 600; font-size: 0.85em; }
+.nl-down { color: #57e389; font-weight: 600; font-size: 0.85em; font-feature-settings: "tnum"; }
+.nl-up { color: #ff7800; font-weight: 600; font-size: 0.85em; font-feature-settings: "tnum"; }
 
 .rule-dot-blocked { color: #ff5555; font-size: 1.1em; }
 .rule-dot-limited { color: #f9c440; font-size: 1.1em; }
 .rule-dot-allowed { color: #57e389; font-size: 1.1em; }
-.rule-dot-none    { color: rgba(255, 255, 255, 0.2); font-size: 1.1em; }
+.rule-dot-none    { color: alpha(currentColor, 0.2); font-size: 1.1em; }
 
-.nl-status { padding: 6px 14px; font-size: 0.9em; border-top: 1px solid rgba(255, 255, 255, 0.08); }
+/* ---- status bar ---- */
+.nl-status { padding: 7px 14px; font-size: 0.9em; border-top: 1px solid alpha(currentColor, 0.08); background: alpha(currentColor, 0.025); }
 .nl-stat { font-feature-settings: "tnum"; font-size: 0.85em; }
-.nl-pause-on  { background: #26a269; color: white; font-weight: bold; border-radius: 6px; padding: 4px 10px; }
-.nl-pause-off { background: #e01b24; color: white; font-weight: bold; border-radius: 6px; padding: 4px 10px; }
-.sidebar-frame { background: rgba(255, 255, 255, 0.015); border-left: 1px solid rgba(255, 255, 255, 0.08); }
+
+/* ---- run / stop button ---- */
+button.nl-state {
+    border-radius: 999px; padding: 3px 16px 3px 12px; min-height: 28px;
+    color: white; font-weight: 700; border: none; box-shadow: none;
+    background-image: none; transition: background-color 180ms ease;
+}
+button.nl-state-on  { background-color: #26a269; }
+button.nl-state-on:hover  { background-color: #2ec27e; }
+button.nl-state-off { background-color: #e01b24; }
+button.nl-state-off:hover { background-color: #ed333b; }
+button.nl-state-offline { background-color: #77767b; }
+.nl-state-dot { font-size: 0.8em; }
+button.nl-state-on .nl-state-dot { animation: nl-pulse 2s ease-in-out infinite; }
+@keyframes nl-pulse { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
+
+/* ---- connections side panel ---- */
+.sidebar-frame { background: alpha(currentColor, 0.015); }
+.sidebar-frame:dir(ltr) { border-left: 1px solid alpha(currentColor, 0.08); }
+.sidebar-frame:dir(rtl) { border-right: 1px solid alpha(currentColor, 0.08); }
+.nl-empty-title { font-size: 1.25em; font-weight: 700; }
+.nl-empty-sub { opacity: 0.6; }
 """.encode("utf-8")
 
 STRINGS = {
@@ -50,7 +79,7 @@ STRINGS = {
     "lock_off": "Lock Network",
     "lock_on": "Network Locked",
     "running": "Running",
-    "paused": "Paused",
+    "paused": "Stopped",
     "clear_rules": "Clear All Rules",
     "autostart": "Start with System",
     "privacy": "Privacy Policy",
@@ -496,6 +525,151 @@ class ConnItem(GObject.Object):
     up_txt = GObject.Property(type=str, default="")
 
 
+class RadarArea(Gtk.Widget):
+    """Animated 'radar' shown while there is nothing to list.
+
+    Purely decorative: rings pulse outwards, a sweep rotates, and the nodes it
+    passes light up with green (download) / orange (upload) packets running
+    along their links. Drawn with GTK's own render nodes (no pycairo needed,
+    so it works the same on Fedora and Debian/Ubuntu). The animation only runs
+    while the widget is mapped.
+    """
+
+    NODES = ((0.6, 0.62), (1.9, 0.86), (2.9, 0.45), (3.8, 0.78), (4.7, 0.55), (5.55, 0.92))
+    BLUE = (0.21, 0.52, 0.89)
+    GREEN = (0.34, 0.89, 0.54)
+    ORANGE = (1.0, 0.47, 0.0)
+    SIZE = 250
+
+    def __init__(self):
+        super().__init__()
+        self.set_size_request(self.SIZE, self.SIZE)
+        self.set_halign(Gtk.Align.CENTER)
+        self.set_valign(Gtk.Align.CENTER)
+        self._t0 = time.monotonic()
+        self._last = 0.0
+        self._tick_id = 0
+        self.connect("map", self._on_map)
+        self.connect("unmap", self._on_unmap)
+
+    def _on_map(self, *_):
+        if not self._tick_id:
+            self._tick_id = self.add_tick_callback(self._on_tick)
+
+    def _on_unmap(self, *_):
+        if self._tick_id:
+            self.remove_tick_callback(self._tick_id)
+            self._tick_id = 0
+
+    def _on_tick(self, *_):
+        now = time.monotonic()
+        if now - self._last >= 1 / 30:
+            self._last = now
+            self.queue_draw()
+        return GLib.SOURCE_CONTINUE
+
+    @staticmethod
+    def _rgba(c, a):
+        # Gdk.RGBA(red=...) silently ignores its keyword arguments in PyGObject.
+        out = Gdk.RGBA()
+        out.red, out.green, out.blue = c[0], c[1], c[2]
+        out.alpha = max(0.0, min(1.0, a))
+        return out
+
+    @staticmethod
+    def _circle(cx, cy, r):
+        rr = Gsk.RoundedRect()
+        rr.init_from_rect(Graphene.Rect().init(cx - r, cy - r, 2 * r, 2 * r), r)
+        return rr
+
+    def _disc(self, snap, cx, cy, r, color):
+        snap.push_rounded_clip(self._circle(cx, cy, r))
+        snap.append_color(color, Graphene.Rect().init(cx - r, cy - r, 2 * r, 2 * r))
+        snap.pop()
+
+    def _ring(self, snap, cx, cy, r, width, color):
+        snap.append_border(self._circle(cx, cy, r), [width] * 4, [color] * 4)
+
+    def _line(self, snap, x0, y0, x1, y1, width, color):
+        length = math.hypot(x1 - x0, y1 - y0)
+        if length < 0.5:
+            return
+        snap.save()
+        snap.translate(Graphene.Point().init(x0, y0))
+        snap.rotate(math.degrees(math.atan2(y1 - y0, x1 - x0)))
+        snap.append_color(color, Graphene.Rect().init(0, -width / 2, length, width))
+        snap.restore()
+
+    def do_snapshot(self, snap):
+        w, h = self.get_width(), self.get_height()
+        if w <= 0 or h <= 0:
+            return
+        t = time.monotonic() - self._t0
+        cx, cy = w / 2, h / 2
+        R = min(w, h) / 2 - 10
+        try:
+            c = self.get_color()
+            fg = (c.red, c.green, c.blue)
+        except Exception:
+            fg = (0.9, 0.9, 0.9)
+        blue, tau = self.BLUE, 2 * math.pi
+
+        # grid: rings + crosshair
+        for k in (1, 2, 3):
+            self._ring(snap, cx, cy, R * k / 3, 1, self._rgba(fg, 0.12 if k < 3 else 0.22))
+        self._line(snap, cx - R, cy, cx + R, cy, 1, self._rgba(fg, 0.06))
+        self._line(snap, cx, cy - R, cx, cy + R, 1, self._rgba(fg, 0.06))
+
+        # expanding pulse
+        phase = (t * 0.4) % 1.0
+        if phase > 0.02:
+            self._ring(snap, cx, cy, R * phase, 1.5, self._rgba(blue, 0.38 * (1 - phase)))
+
+        # rotating sweep: a conic gradient whose bright edge is the leading line
+        sweep = (t * 1.1) % tau
+        tail = 0.16  # fraction of a turn that fades behind the line
+        stops = []
+        for off, alpha in ((0.0, 0.0), (1.0 - tail, 0.0), (1.0, 0.34)):
+            st = Gsk.ColorStop()
+            st.offset = off
+            st.color = self._rgba(blue, alpha)
+            stops.append(st)
+        # GSK conic gradients start at 12 o'clock and run clockwise; our angles
+        # start at 3 o'clock, hence the +90.
+        snap.push_rounded_clip(self._circle(cx, cy, R))
+        snap.append_conic_gradient(
+            Graphene.Rect().init(cx - R, cy - R, 2 * R, 2 * R),
+            Graphene.Point().init(cx, cy),
+            math.degrees(sweep) + 90.0,
+            stops,
+        )
+        snap.pop()
+        self._line(snap, cx, cy, cx + R * math.cos(sweep), cy + R * math.sin(sweep), 1.5,
+                   self._rgba(blue, 0.9))
+
+        # nodes the sweep has just passed light up
+        for idx, (theta, rad) in enumerate(self.NODES):
+            nx = cx + rad * R * math.cos(theta)
+            ny = cy + rad * R * math.sin(theta)
+            age = ((sweep - theta) % tau) / tau
+            lit = max(0.0, 1 - age * 1.15) ** 2
+            if lit > 0.02:
+                self._line(snap, cx, cy, nx, ny, 1, self._rgba(blue, 0.22 * lit))
+                self._disc(snap, nx, ny, 8, self._rgba(blue, 0.25 * lit))
+                if lit > 0.12:
+                    p = (t * 0.55 + idx * 0.37) % 1.0
+                    if idx % 2 == 0:  # download: node -> centre
+                        px, py, col = nx + (cx - nx) * p, ny + (cy - ny) * p, self.GREEN
+                    else:             # upload: centre -> node
+                        px, py, col = cx + (nx - cx) * p, cy + (ny - cy) * p, self.ORANGE
+                    self._disc(snap, px, py, 2.3, self._rgba(col, lit * 1.4))
+            self._disc(snap, nx, ny, 3.2, self._rgba(blue, 0.30 + 0.70 * lit))
+
+        # centre = this machine
+        self._disc(snap, cx, cy, 10, self._rgba(blue, 0.30))
+        self._disc(snap, cx, cy, 5, self._rgba(blue, 1.0))
+
+
 class NetLimiterWindow(Adw.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="NetLimiter-Linux")
@@ -513,6 +687,7 @@ class NetLimiterWindow(Adw.ApplicationWindow):
         self._starting = False
         self.paused = False
         self.locked = False
+        self._offline = True
         self._preselect_exe = getattr(app, "preselect_exe", None)
         self._preselect_tries = 0
         self.connect("close-request", self._on_close_request)
@@ -564,20 +739,20 @@ class NetLimiterWindow(Adw.ApplicationWindow):
         self.lock_btn.connect("toggled", self.on_lock)
         header.pack_start(self.lock_btn)
 
-        pause_box = Gtk.Box(spacing=8)
-        pause_box.set_valign(Gtk.Align.CENTER)
-
+        # One explicit run/stop control: green = protection running,
+        # red = stopped (limits and blocks switched off), grey = no daemon.
+        self.pause_btn = Gtk.Button(valign=Gtk.Align.CENTER)
+        self.pause_btn.add_css_class("nl-state")
+        inner = Gtk.Box(spacing=8)
+        self.pause_dot = Gtk.Label(label="●")
+        self.pause_dot.add_css_class("nl-state-dot")
         self.pause_label = Gtk.Label(label=s["running"])
-        self.pause_label.add_css_class("nl-pause-on")
-
-        self.pause_switch = Gtk.Switch()
-        self.pause_switch.set_active(False)
-        self.pause_switch.set_valign(Gtk.Align.CENTER)
-        self.pause_switch.connect("state-set", self.on_pause_switch)
-
-        pause_box.append(self.pause_label)
-        pause_box.append(self.pause_switch)
-        header.pack_start(pause_box)
+        inner.append(self.pause_dot)
+        inner.append(self.pause_label)
+        self.pause_btn.set_child(inner)
+        self.pause_btn.connect("clicked", self.on_pause_clicked)
+        header.pack_start(self.pause_btn)
+        self._set_pause_state("offline")
 
         self.theme_btn = Gtk.Button(icon_name="weather-clear-night-symbolic", valign=Gtk.Align.CENTER)
         self.theme_btn.set_tooltip_text("Toggle Dark / Light Theme")
@@ -1049,8 +1224,52 @@ X-GNOME-Autostart-enabled=true
 
         cscroll = Gtk.ScrolledWindow(vexpand=True, hexpand=True)
         cscroll.set_child(self.conn_view)
-        box.append(cscroll)
+
+        empty = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, vexpand=True, hexpand=True)
+        empty.set_valign(Gtk.Align.CENTER)
+        empty.set_margin_start(24)
+        empty.set_margin_end(24)
+        empty.append(RadarArea())
+        self.empty_title = Gtk.Label(label="")
+        self.empty_title.add_css_class("nl-empty-title")
+        self.empty_sub = Gtk.Label(label="", wrap=True, justify=Gtk.Justification.CENTER, max_width_chars=34)
+        self.empty_sub.add_css_class("nl-empty-sub")
+        empty.append(self.empty_title)
+        empty.append(self.empty_sub)
+
+        self.conn_stack = Gtk.Stack(vexpand=True, hexpand=True)
+        self.conn_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self.conn_stack.set_transition_duration(220)
+        self.conn_stack.add_named(cscroll, "list")
+        self.conn_stack.add_named(empty, "empty")
+        box.append(self.conn_stack)
+
+        self.conn_store.connect("items-changed", lambda *_: self._sync_conn_empty())
+        self._sync_conn_empty()
         return box
+
+    def _sync_conn_empty(self):
+        """Show the radar instead of an empty table, with a fitting message."""
+        stack = getattr(self, "conn_stack", None)
+        if stack is None:
+            return
+        if self.conn_store.get_n_items() > 0:
+            stack.set_visible_child_name("list")
+            return
+        sel = None
+        selection = getattr(self, "selection", None)
+        if selection is not None:
+            sel = selection.get_selected_item()
+        if sel is None or sel.exe == "":
+            self.empty_title.set_text("Select an app")
+            self.empty_sub.set_text(
+                "Pick an application from the list to watch its live connections and "
+                "remote IPs. Global Control sets system-wide limits."
+            )
+        else:
+            self.empty_title.set_text("All quiet")
+            self.empty_sub.set_text(f"{sel.name or sel.exe} has no active connections right now.")
+        stack.set_visible_child_name("empty")
 
     def _build_conn_context_menu(self):
         pop = Gtk.Popover()
@@ -1107,6 +1326,8 @@ X-GNOME-Autostart-enabled=true
         s = STRINGS
         self._busy = False
         if err:
+            self._offline = True
+            self._set_pause_state("offline")
             if offline:
                 if not self._starting:
                     self.banner.set_title(f"{s['service_offline']} ({err})")
@@ -1120,6 +1341,7 @@ X-GNOME-Autostart-enabled=true
             self.banner.set_revealed(True)
             return False
         self.banner.set_revealed(False)
+        self._offline = False
         snap = resp["snapshot"]
         self.snapshot = snap
 
@@ -1153,34 +1375,32 @@ X-GNOME-Autostart-enabled=true
         if tray:
             tray.update(iface_down, iface_up, paused, is_locked)
 
+        esc = GLib.markup_escape_text
+        speed = (
+            f'<span foreground="#57e389" weight="bold">↓ {esc(format_rate(iface_down))}</span>',
+            f'<span foreground="#ff7800" weight="bold">↑ {esc(format_rate(iface_up))}</span>',
+        )
         parts = [
-            f"↓ {format_rate(iface_down)}",
-            f"↑ {format_rate(iface_up)}",
+            speed[0],
+            speed[1],
             s["root"] if snap.get("privileged") else s["no_root"],
             "nft OK" if snap.get("nft_ok") else "nft N/A",
             "pkt OK" if snap.get("capture_ok") else "pkt N/A (TCP only)",
-            f"⏸ {s['paused']}" if paused else f"▶ {s['running']}",
+            (
+                f'<span foreground="#ff6b6b" weight="bold">■ {s["paused"]}</span>'
+                if paused
+                else f'<span foreground="#57e389" weight="bold">▶ {s["running"]}</span>'
+            ),
             f"{len(snap.get('processes', []))} Apps",
         ]
-        self.status.set_text("   ·   ".join(f"⁨{p}⁩" for p in parts))
+        self.status.set_markup("   ·   ".join(f"⁨{p}⁩" for p in parts))
 
         self.lock_btn.handler_block_by_func(self.on_lock)
         self.lock_btn.set_active(is_locked)
         self.lock_btn.set_label(s["lock_on"] if is_locked else s["lock_off"])
         self.lock_btn.handler_unblock_by_func(self.on_lock)
 
-        self.pause_switch.handler_block_by_func(self.on_pause_switch)
-        self.pause_switch.set_active(paused)
-        self.pause_switch.handler_unblock_by_func(self.on_pause_switch)
-
-        self.pause_label.remove_css_class("nl-pause-on")
-        self.pause_label.remove_css_class("nl-pause-off")
-        if paused:
-            self.pause_label.set_text(s["paused"])
-            self.pause_label.add_css_class("nl-pause-off")
-        else:
-            self.pause_label.set_text(s["running"])
-            self.pause_label.add_css_class("nl-pause-on")
+        self._set_pause_state("off" if paused else "on")
 
         rules = {r.get("exe"): r for r in rules_list}
         seen = set()
@@ -1205,6 +1425,7 @@ X-GNOME-Autostart-enabled=true
         else:
             self.conn_store.remove_all()
 
+        self._sync_conn_empty()
         self._update_buttons()
         return False
 
@@ -1318,6 +1539,7 @@ X-GNOME-Autostart-enabled=true
                     self.conn_store.remove_all()
             else:
                 self.conn_store.remove_all()
+            self._sync_conn_empty()
         self._update_buttons()
 
     def _update_buttons(self):
@@ -1358,12 +1580,33 @@ X-GNOME-Autostart-enabled=true
         btn.set_label(STRINGS["lock_on"] if active else STRINGS["lock_off"])
         self._send({"cmd": "set_lock", "enabled": active})
 
-    def on_pause_switch(self, _switch, state):
-        if bool(state) == bool(self.paused):
-            return False
-        msg = "⏸ Paused" if state else "▶ Resumed"
-        self._send({"cmd": "set_paused", "enabled": bool(state)}, msg)
-        return False
+    def _set_pause_state(self, state):
+        """state: 'on' (running), 'off' (stopped) or 'offline' (no daemon)."""
+        for c in ("nl-state-on", "nl-state-off", "nl-state-offline"):
+            self.pause_btn.remove_css_class(c)
+        self.pause_btn.add_css_class(f"nl-state-{state}")
+        if state == "on":
+            self.pause_label.set_text(STRINGS["running"])
+            self.pause_dot.set_text("●")
+            self.pause_btn.set_tooltip_text("Protection is running. Click to stop (limits and blocks are switched off).")
+        elif state == "off":
+            self.pause_label.set_text(STRINGS["paused"])
+            self.pause_dot.set_text("■")
+            self.pause_btn.set_tooltip_text("Protection is stopped. Click to start.")
+        else:
+            self.pause_label.set_text("Offline")
+            self.pause_dot.set_text("○")
+            self.pause_btn.set_tooltip_text("The NetLimiter service is not running.")
+        self.pause_btn.set_sensitive(state != "offline")
+
+    def on_pause_clicked(self, _btn):
+        if self._offline:
+            return
+        target = not self.paused
+        self.paused = target  # optimistic; the next snapshot confirms it
+        self._set_pause_state("off" if target else "on")
+        msg = "■ Stopped: limits and blocks are off" if target else "▶ Running: protection is on"
+        self._send({"cmd": "set_paused", "enabled": target}, msg)
 
     def on_block(self, btn):
         sel = self.selection.get_selected_item()
