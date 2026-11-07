@@ -1,3 +1,8 @@
+# Fallbacks so the same spec also builds on Debian/Ubuntu (rpm there lacks these macros).
+%{!?_unitdir: %global _unitdir /usr/lib/systemd/system}
+%{!?_presetdir: %global _presetdir /usr/lib/systemd/system-preset}
+%{!?_sysusersdir: %global _sysusersdir /usr/lib/sysusers.d}
+
 Name:           netlimiter
 Version:        1.0.0
 Release:        1%{?dist}

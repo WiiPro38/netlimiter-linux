@@ -1,0 +1,18 @@
+#!/bin/sh
+set -e
+if [ "$1" = "configure" ]; then
+    # dpkg does not process sysusers.d, so create the account/group here.
+    if [ -x /usr/bin/systemd-sysusers ]; then
+        systemd-sysusers /usr/lib/sysusers.d/netlimiter.conf || true
+    fi
+    getent group netlimiter >/dev/null 2>&1 || groupadd --system netlimiter || true
+    install -d -m 0755 /var/lib/netlimiter
+    chgrp netlimiter /var/lib/netlimiter 2>/dev/null || true
+
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload || true
+        systemctl enable netlimiter-daemon.service || true
+        systemctl restart netlimiter-daemon.service || true
+    fi
+fi
+exit 0

@@ -1,9 +1,12 @@
 Package: netlimiter
-Version: 0.2.0
-Section: utils
+Version: 1.0.0-1
+Section: net
 Priority: optional
 Architecture: amd64
-Maintainer: <you@example.com>
-Depends: nftables, python3-gi, python3-gobject, gir1.2-gtk-4.0, systemd
-Description: Network traffic monitor and rate limiter for Linux
- A local-first network monitoring and management tool using nftables and GTK4.
+Depends: nftables, iproute2, python3, python3-gi, gir1.2-gtk-4.0, gir1.2-adw-1, systemd, util-linux, polkitd | policykit-1
+Recommends: libnotify-bin
+Maintainer: Mohamed <ziramziram1994@gmail.com>
+Description: Network limiter and monitor (NetLimiter clone for Linux)
+ Per-application bandwidth monitoring, blocking and strict speed limiting
+ (tc HTB + IFB, nftables), with a GTK4/libadwaita interface and desktop
+ notifications.

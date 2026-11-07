@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload || true
+fi
+# Settings (/var/lib/netlimiter/rules.json) are kept on remove, deleted on purge.
+if [ "$1" = "purge" ]; then
+    rm -rf /var/lib/netlimiter
+fi
+exit 0
