@@ -11,6 +11,8 @@ PRESETDIR = $(DESTDIR)$(PREFIX)/lib/systemd/system-preset
 LOCALSTATEDIR = $(DESTDIR)/var/lib/netlimiter
 
 CARGO ?= cargo
+# على Ubuntu/Debian: make rpm RPMBUILD_FLAGS=--nodeps (أسماء BuildRequires مختلفة)
+RPMBUILD_FLAGS ?=
 
 # ---- معلومات الحزمة العامة ----
 NAME     := netlimiter
@@ -27,7 +29,7 @@ DEBDIR = packaging/debian
 BUILD_DEB_ROOT = $(CURDIR)/debian_build
 
 .PHONY: all backend frontend install clean \
-        srpm rpm clean-rpm prepare-rpm deb clean-deb
+        srpm rpm clean-rpm prepare-rpm deb clean-deb packages clean-packages
 
 # ---- البناء العادي ----
 all: backend frontend
@@ -67,7 +69,7 @@ clean:
 
 prepare-rpm:
 	@echo ">> تجهيز شجرة rpmbuild..."
-	@mkdir -p $(TOPdir)/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
+	@mkdir -p $(TOPdir)/BUILD $(TOPdir)/BUILDROOT $(TOPdir)/RPMS $(TOPdir)/SOURCES $(TOPdir)/SPECS $(TOPdir)/SRPMS
 	@echo ">> إنشاء الأرشيف $(TARBALL)..."
 	@cd .. && tar -czf $(TARBALL) \
 	    --exclude='target' \
@@ -83,7 +85,7 @@ prepare-rpm:
 
 rpm: prepare-rpm
 	@echo ">> بناء RPM..."
-	rpmbuild -ba $(SPECFILE)
+	rpmbuild -ba $(RPMBUILD_FLAGS) $(SPECFILE)
 	@echo ""
 	@echo ">> النتيجة:"
 	@ls -1 $(TOPdir)/RPMS/*/$(NAME)-$(VERSION)-*.rpm 2>/dev/null || true
@@ -91,7 +93,7 @@ rpm: prepare-rpm
 
 srpm: prepare-rpm
 	@echo ">> بناء SRPM..."
-	rpmbuild -bs $(SPECFILE)
+	rpmbuild -bs $(RPMBUILD_FLAGS) $(SPECFILE)
 	@ls -1 $(TOPdir)/SRPMS/$(NAME)-$(VERSION)-*.src.rpm 2>/dev/null || true
 
 clean-rpm:
@@ -110,7 +112,7 @@ deb: all
 	@mkdir -p $(BUILD_DEB_ROOT)/usr/bin
 	@mkdir -p $(BUILD_DEB_ROOT)/usr/libexec/netlimiter
 	@mkdir -p $(BUILD_DEB_ROOT)/usr/share/applications
-	@mkdir -p $(BUILD_DEB_ROOT)/lib/systemd/system
+	@mkdir -p $(BUILD_DEB_ROOT)/usr/lib/systemd/system
 	@mkdir -p $(BUILD_DEB_ROOT)/usr/share/polkit-1/actions
 	@mkdir -p $(BUILD_DEB_ROOT)/var/lib/netlimiter
 	@mkdir -p $(BUILD_DEB_ROOT)/usr/lib/sysusers.d
@@ -122,13 +124,16 @@ deb: all
 	@install -m 755 gui/main.py $(BUILD_DEB_ROOT)/usr/bin/netlimiter-gui
 	@install -m 755 gui/netlimiter_notifier.py $(BUILD_DEB_ROOT)/usr/libexec/netlimiter/netlimiter_notifier.py
 	@install -m 644 gui/netlimiter-gui.desktop $(BUILD_DEB_ROOT)/usr/share/applications/netlimiter-gui.desktop
-	@install -m 644 packaging/netlimiter-daemon.service $(BUILD_DEB_ROOT)/lib/systemd/system/netlimiter-daemon.service
+	@install -m 644 packaging/netlimiter-daemon.service $(BUILD_DEB_ROOT)/usr/lib/systemd/system/netlimiter-daemon.service
 	@install -m 644 packaging/com.netlimiter.policy $(BUILD_DEB_ROOT)/usr/share/polkit-1/actions/com.netlimiter.policy
 	@install -m 644 packaging/netlimiter.sysusers $(BUILD_DEB_ROOT)/usr/lib/sysusers.d/netlimiter.conf
 	@install -m 644 packaging/90-netlimiter.preset $(BUILD_DEB_ROOT)/usr/lib/systemd/system-preset/90-netlimiter.preset
 
-	# نسخ ملف التحكم (control)
+	# ملف التحكم + سكربتات التثبيت (إنشاء المجموعة وتفعيل الخدمة)
 	@cp $(DEBDIR)/control $(BUILD_DEB_ROOT)/DEBIAN/control
+	@install -m 755 $(DEBDIR)/postinst $(BUILD_DEB_ROOT)/DEBIAN/postinst
+	@install -m 755 $(DEBDIR)/prerm $(BUILD_DEB_ROOT)/DEBIAN/prerm
+	@install -m 755 $(DEBDIR)/postrm $(BUILD_DEB_ROOT)/DEBIAN/postrm
 
 	# بناء الحزمة النهائية
 	@echo ">> بناء ملف .deb..."
@@ -138,3 +143,10 @@ deb: all
 
 clean-deb:
 	@rm -f $(NAME)-*.deb
+
+# ---- كل الحزم دفعة واحدة (rpm + deb) ----
+# يحتاج: rpmbuild (Fedora: rpm-build / Ubuntu: rpm) و dpkg-deb (Fedora: dpkg / Ubuntu: مثبّت)
+packages: rpm deb
+	@echo ">> تم بناء حزمتي RPM و DEB"
+
+clean-packages: clean-rpm clean-deb
