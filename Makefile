@@ -16,7 +16,7 @@ RPMBUILD_FLAGS ?=
 
 # ---- معلومات الحزمة العامة ----
 NAME     := netlimiter
-VERSION  := 1.0.0
+VERSION  := 2.0.0
 PROJDIR  := $(notdir $(CURDIR))
 TOPdir   := $(HOME)/rpmbuild
 SOURCES  := $(TOPdir)/SOURCES
