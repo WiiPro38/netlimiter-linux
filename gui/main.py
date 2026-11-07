@@ -1679,7 +1679,7 @@ X-GNOME-Autostart-enabled=true
         if cls:
             d = cls(
                 application_name="NetLimiter-Linux",
-                version="0.7.7",
+                version="2.0.0",
                 comments="Network traffic monitor & rate limiter for Linux.",
                 developer_name="WiiPro38 (NOVAFroge)",
                 copyright="© WiiPro38 (NOVAFroge). All rights Reserved.",
@@ -1689,7 +1689,7 @@ X-GNOME-Autostart-enabled=true
             Adw.AboutWindow(
                 transient_for=self,
                 application_name="NetLimiter-Linux",
-                version="0.7.7",
+                version="2.0.0",
                 comments="Network traffic monitor & rate limiter for Linux.",
                 developer_name="WiiPro38 (NOVAFroge)",
                 copyright="© WiiPro38 (NOVAFroge). All rights Reserved.",
