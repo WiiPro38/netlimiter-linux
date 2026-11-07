@@ -12,6 +12,26 @@ pub struct RuleStore {
     pub lock_all: bool,
 }
 
+/// Snap apps run from /snap/<name>/<revision>/..., and the revision changes on
+/// every update. Rules are keyed by path, so map the revision to `current`
+/// (a symlink to the active revision) to keep rules valid across updates.
+pub fn normalize_exe(path: &str) -> String {
+    for prefix in ["/snap/", "/var/lib/snapd/snap/"] {
+        if let Some(rest) = path.strip_prefix(prefix) {
+            let mut parts = rest.splitn(3, '/');
+            if let (Some(name), Some(rev)) = (parts.next(), parts.next()) {
+                let digits = rev.strip_prefix('x').unwrap_or(rev);
+                if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
+                    let tail = parts.next().map(|t| format!("/{t}")).unwrap_or_default();
+                    return format!("{prefix}{name}/current{tail}");
+                }
+            }
+            break;
+        }
+    }
+    path.to_string()
+}
+
 impl RuleStore {
     pub fn load() -> Self {
         let path = store_path();
@@ -30,11 +50,27 @@ impl RuleStore {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => eprintln!("rules: cannot read {}: {err}", path.display()),
         }
-        Self {
+        // Migrate rules saved with a snap revision in their path.
+        let mut changed = false;
+        for rule in rules.iter_mut() {
+            let norm = normalize_exe(&rule.exe);
+            if norm != rule.exe {
+                rule.exe = norm;
+                changed = true;
+            }
+        }
+        let before = rules.len();
+        let mut seen = std::collections::HashSet::new();
+        rules.retain(|r| seen.insert(r.exe.clone()));
+        let mut store = Self {
             path,
             rules,
             lock_all: false,
+        };
+        if changed || store.rules.len() != before {
+            store.persist();
         }
+        store
     }
 
     /// Atomic save: write a temp file, fsync, then rename over the real one.
@@ -128,4 +164,24 @@ fn simple_hash(s: &str) -> u64 {
         h = h.wrapping_mul(0x100000001b3);
     }
     h
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_exe;
+
+    #[test]
+    fn snap_revision_is_normalized() {
+        assert_eq!(
+            normalize_exe("/snap/firefox/8763/usr/lib/firefox/firefox"),
+                   "/snap/firefox/current/usr/lib/firefox/firefox"
+        );
+        assert_eq!(normalize_exe("/snap/core22/x12/usr/bin/x"), "/snap/core22/current/usr/bin/x");
+        assert_eq!(
+            normalize_exe("/snap/firefox/current/usr/bin/f"),
+                   "/snap/firefox/current/usr/bin/f"
+        );
+        assert_eq!(normalize_exe("/opt/brave.com/brave/brave"), "/opt/brave.com/brave/brave");
+        assert_eq!(normalize_exe("/snap/bin/firefox"), "/snap/bin/firefox");
+    }
 }

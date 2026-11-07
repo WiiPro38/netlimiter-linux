@@ -85,9 +85,9 @@ impl Monitor {
         let socks = dump_sockets().unwrap_or_default();
         let now = Instant::now();
         let dt = now
-            .saturating_duration_since(self.prev_at)
-            .as_secs_f64()
-            .max(0.2);
+        .saturating_duration_since(self.prev_at)
+        .as_secs_f64()
+        .max(0.2);
         self.prev_at = now;
 
         let mut proc_acc: HashMap<String, ProcessAcc> = HashMap::new();
@@ -111,25 +111,25 @@ impl Monitor {
                 pid: 0,
                 uid: sock.uid,
                 exe: String::from("unknown"),
-                name: String::from("unknown"),
+                                                                   name: String::from("unknown"),
             });
 
             // سجّل التطبيق كمعروف (حتى لو أُغلق لاحقاً)
             self.known_apps
-                .entry(owner.exe.clone())
-                .and_modify(|k| {
-                    if owner.pid > 0 && !k.pids.contains(&owner.pid) {
-                        k.pids.push(owner.pid);
-                    }
-                    if !owner.name.is_empty() && owner.name != "unknown" {
-                        k.name = owner.name.clone();
-                    }
-                })
-                .or_insert_with(|| KnownApp {
-                    name: owner.name.clone(),
-                    uid: owner.uid,
-                    pids: if owner.pid > 0 { vec![owner.pid] } else { Vec::new() },
-                });
+            .entry(owner.exe.clone())
+            .and_modify(|k| {
+                if owner.pid > 0 && !k.pids.contains(&owner.pid) {
+                    k.pids.push(owner.pid);
+                }
+                if !owner.name.is_empty() && owner.name != "unknown" {
+                    k.name = owner.name.clone();
+                }
+            })
+            .or_insert_with(|| KnownApp {
+                name: owner.name.clone(),
+                            uid: owner.uid,
+                            pids: if owner.pid > 0 { vec![owner.pid] } else { Vec::new() },
+            });
 
             let proto = proto_num(sock.proto);
             let local = sock.local.ip().to_canonical();
@@ -164,7 +164,7 @@ impl Monitor {
                 let (d_up, d_down) = match self.prev_sock.get(&sock.inode) {
                     Some(prev) => (
                         sample.sent.saturating_sub(prev.sent),
-                        sample.recv.saturating_sub(prev.recv),
+                                   sample.recv.saturating_sub(prev.recv),
                     ),
                     None => (0, 0),
                 };
@@ -180,18 +180,18 @@ impl Monitor {
             }
 
             let acc = proc_acc
-                .entry(owner.exe.clone())
-                .or_insert_with(|| ProcessAcc {
-                    exe: owner.exe.clone(),
-                    name: owner.name.clone(),
-                    uid: owner.uid,
-                    pids: Vec::new(),
-                    connections: 0,
-                    down_bps: 0,
-                    up_bps: 0,
-                    down_total: 0,
-                    up_total: 0,
-                });
+            .entry(owner.exe.clone())
+            .or_insert_with(|| ProcessAcc {
+                exe: owner.exe.clone(),
+                            name: owner.name.clone(),
+                            uid: owner.uid,
+                            pids: Vec::new(),
+                            connections: 0,
+                            down_bps: 0,
+                            up_bps: 0,
+                            down_total: 0,
+                            up_total: 0,
+            });
             if !acc.pids.contains(&owner.pid) && owner.pid > 0 {
                 acc.pids.push(owner.pid);
             }
@@ -218,9 +218,9 @@ impl Monitor {
                     Some(ent.0.clone())
                 } else {
                     let found = bound
-                        .get(&(k.proto, k.local, k.lport))
-                        .or_else(|| wild.get(&(k.proto, k.lport)))
-                        .cloned();
+                    .get(&(k.proto, k.local, k.lport))
+                    .or_else(|| wild.get(&(k.proto, k.lport)))
+                    .cloned();
                     if let Some(e) = &found {
                         self.flows.insert(k, (e.clone(), now));
                     }
@@ -252,7 +252,7 @@ impl Monitor {
             }
         }
         self.flows
-            .retain(|_, (_, seen)| now.duration_since(*seen) <= FLOW_TTL);
+        .retain(|_, (_, seen)| now.duration_since(*seen) <= FLOW_TTL);
 
         for (exe, (d, u)) in &exe_delta {
             let t = self.totals.entry(exe.clone()).or_insert((0, 0));
@@ -266,17 +266,17 @@ impl Monitor {
             if !proc_acc.contains_key(exe) {
                 proc_acc.insert(
                     exe.clone(),
-                    ProcessAcc {
-                        exe: exe.clone(),
-                        name: known.name.clone(),
-                        uid: known.uid,
-                        pids: known.pids.clone(),
-                        connections: 0,
-                        down_bps: 0,
-                        up_bps: 0,
-                        down_total: 0,
-                        up_total: 0,
-                    },
+                                ProcessAcc {
+                                    exe: exe.clone(),
+                                name: known.name.clone(),
+                                uid: known.uid,
+                                pids: known.pids.clone(),
+                                connections: 0,
+                                down_bps: 0,
+                                up_bps: 0,
+                                down_total: 0,
+                                up_total: 0,
+                                },
                 );
             }
         }
@@ -292,8 +292,8 @@ impl Monitor {
         let mut connections: Vec<ConnectionRow> = Vec::new();
         for (i, owner, key) in &live {
             let (d, u) = (*key)
-                .and_then(|k| flow_delta.get(&k).copied())
-                .unwrap_or((0, 0));
+            .and_then(|k| flow_delta.get(&k).copied())
+            .unwrap_or((0, 0));
             connections.push(to_row(&socks[*i], owner, per_sec(d, dt), per_sec(u, dt)));
         }
         for (k, exe) in &extra_rows {
@@ -302,17 +302,17 @@ impl Monitor {
             let is_tcp = k.proto == PROTO_TCP;
             connections.push(ConnectionRow {
                 proto: if is_tcp { "tcp" } else { "udp" }.to_string(),
-                family: if k.remote.is_ipv6() { "ipv6" } else { "ipv4" }.to_string(),
-                local: SocketAddr::new(k.local, k.lport).to_string(),
-                remote: SocketAddr::new(k.remote, k.rport).to_string(),
-                state: if is_tcp { "CLOSED" } else { "UDP" }.to_string(),
-                inode: 0,
-                pid: known.and_then(|a| a.pids.first().copied()).unwrap_or(0),
-                exe: exe.clone(),
-                name: known.map(|a| a.name.clone()).unwrap_or_else(|| exe.clone()),
-                uid: known.map(|a| a.uid).unwrap_or(0),
-                down_bps: per_sec(d, dt),
-                up_bps: per_sec(u, dt),
+                             family: if k.remote.is_ipv6() { "ipv6" } else { "ipv4" }.to_string(),
+                             local: SocketAddr::new(k.local, k.lport).to_string(),
+                             remote: SocketAddr::new(k.remote, k.rport).to_string(),
+                             state: if is_tcp { "CLOSED" } else { "UDP" }.to_string(),
+                             inode: 0,
+                             pid: known.and_then(|a| a.pids.first().copied()).unwrap_or(0),
+                             exe: exe.clone(),
+                             name: known.map(|a| a.name.clone()).unwrap_or_else(|| exe.clone()),
+                             uid: known.map(|a| a.uid).unwrap_or(0),
+                             down_bps: per_sec(d, dt),
+                             up_bps: per_sec(u, dt),
             });
         }
 
@@ -435,15 +435,16 @@ fn inode_owners() -> HashMap<u64, ProcOwner> {
             Err(_) => continue,
         };
         let comm = fs::read_to_string(format!("/proc/{pid}/comm"))
-            .unwrap_or_default()
-            .trim()
-            .to_string();
+        .unwrap_or_default()
+        .trim()
+        .to_string();
         let exe_path = fs::read_link(format!("/proc/{pid}/exe"))
-            .ok()
-            .and_then(|p| p.to_str().map(|s| s.to_string()))
-            .unwrap_or_else(|| comm.clone())
-            .trim_end_matches(" (deleted)")
-            .to_string();
+        .ok()
+        .and_then(|p| p.to_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| comm.clone())
+        .trim_end_matches(" (deleted)")
+        .to_string();
+        let exe_path = crate::rules::normalize_exe(&exe_path);
         let (exe, name) = identify(pid, exe_path, &comm);
         let owner = ProcOwner {
             pid,
@@ -474,12 +475,12 @@ const INTERPRETERS: &[&str] = &[
 fn is_interpreter(base: &str) -> bool {
     INTERPRETERS.iter().any(|i| {
         base == *i
-            || base
-                .strip_prefix(i)
-                .map(|rest| {
-                    !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit() || c == '.')
-                })
-                .unwrap_or(false)
+        || base
+        .strip_prefix(i)
+        .map(|rest| {
+            !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit() || c == '.')
+        })
+        .unwrap_or(false)
     })
 }
 
@@ -487,17 +488,17 @@ fn is_interpreter(base: &str) -> bool {
 fn script_arg(pid: i32) -> Option<String> {
     let raw = fs::read(format!("/proc/{pid}/cmdline")).ok()?;
     raw.split(|b| *b == 0)
-        .skip(1)
-        .filter_map(|a| std::str::from_utf8(a).ok())
-        .find(|a| !a.is_empty() && !a.starts_with('-') && !a.contains(' '))
-        .map(|s| s.to_string())
+    .skip(1)
+    .filter_map(|a| std::str::from_utf8(a).ok())
+    .find(|a| !a.is_empty() && !a.starts_with('-') && !a.contains(' '))
+    .map(|s| s.to_string())
 }
 
 fn file_name(path: &str) -> Option<String> {
     Path::new(path)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .map(|s| s.to_string())
+    .file_name()
+    .and_then(|s| s.to_str())
+    .map(|s| s.to_string())
 }
 
 /// Returns (rule key, display name). The name is the executable's file name

@@ -39,7 +39,15 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl AppState {
     pub fn new() -> Arc<Self> {
-        let rules = RuleStore::load();
+        let mut rules = RuleStore::load();
+        if !AUTO_BLOCK_NEW_APPS {
+            // قواعد حظر تلقائي قديمة محفوظة من إصدارات سابقة: تُحذف.
+            let before = rules.rules.len();
+            rules.rules.retain(|r| !r.id.starts_with("auto-"));
+            if rules.rules.len() != before {
+                rules.persist();
+            }
+        }
         let snapshot = Snapshot {
             processes: Vec::new(),
             connections: Vec::new(),
@@ -114,8 +122,12 @@ fn apply_socket_perms(path: &str) {
     let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o666));
 }
 
+/// true = كل تطبيق جديد يتصل بالشبكة يُحظر حتى يقرر المستخدم.
+const AUTO_BLOCK_NEW_APPS: bool = true;
+
 static NSS_LOCK: Mutex<()> = Mutex::new(());
-const ALLOWED_GROUPS: [&str; 2] = ["wheel", "netlimiter"];
+/// wheel = Fedora/RHEL/Arch admins, sudo/admin = Debian/Ubuntu/Kubuntu admins.
+const ALLOWED_GROUPS: [&str; 5] = ["wheel", "sudo", "admin", "adm", "netlimiter"];
 
 /// آخر مرة أُرسل فيها إشعار لكل تطبيق (cooldown).
 static LAST_NOTIFIED: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
@@ -303,20 +315,18 @@ fn notify_and_block_new_app(state: &AppState, exe: &str, name: &str) {
         }
     }
 
-    // ✅ لا قاعدة يدوية → احظر التطبيق تلقائياً بقاعدة auto-block
-    //    حتى يتخذ المستخدم قراراً (سماح/حظر/تحديد).
-    {
+    // الحظر التلقائي للتطبيقات الجديدة مفعّل (AUTO_BLOCK_NEW_APPS).
+    if AUTO_BLOCK_NEW_APPS {
         let mut store = lock(&state.rules);
         let auto_id = auto_block_id(exe);
-        let already = store.rules.iter().any(|r| r.id == auto_id);
-        if !already {
+        if !store.rules.iter().any(|r| r.id == auto_id) {
             store.rules.push(Rule {
                 id: auto_id,
                 exe: exe.to_string(),
-                             action: RuleAction::Block,
-                             down_kbps: None,
-                             up_kbps: None,
-                             enabled: true,
+                action: RuleAction::Block,
+                down_kbps: None,
+                up_kbps: None,
+                enabled: true,
             });
             store.persist();
             eprintln!("auto-block: {exe}");
@@ -330,7 +340,12 @@ fn notify_and_block_new_app(state: &AppState, exe: &str, name: &str) {
     notify_new_app(exe, name);
 }
 
+/// Active graphical user. logind is authoritative (utmp, which `who` reads,
+/// is no longer written on recent Debian/Ubuntu); `who` stays as a fallback.
 fn get_active_gui_user() -> Option<(String, String)> {
+    if let Some(found) = gui_user_from_logind() {
+        return Some(found);
+    }
     let output = Command::new("who").output().ok()?;
     let text = String::from_utf8_lossy(&output.stdout);
     for line in text.lines() {
@@ -340,6 +355,39 @@ fn get_active_gui_user() -> Option<(String, String)> {
             let uid_out = Command::new("id").arg("-u").arg(&user).output().ok()?;
             let uid = String::from_utf8_lossy(&uid_out.stdout).trim().to_string();
             return Some((user, uid));
+        }
+    }
+    None
+}
+
+fn gui_user_from_logind() -> Option<(String, String)> {
+    let list = Command::new("loginctl")
+        .args(["list-sessions", "--no-legend"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&list.stdout);
+    for line in text.lines() {
+        let Some(id) = line.split_whitespace().next() else {
+            continue;
+        };
+        let show = Command::new("loginctl")
+            .args(["show-session", id, "-p", "Name", "-p", "User", "-p", "Type", "-p", "Active", "-p", "Class"])
+            .output()
+            .ok()?;
+        let info = String::from_utf8_lossy(&show.stdout);
+        let get = |key: &str| {
+            info.lines()
+                .find_map(|l| l.strip_prefix(&format!("{key}=")))
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        };
+        let graphical = matches!(get("Type").as_str(), "x11" | "wayland" | "mir");
+        if get("Active") == "yes" && get("Class") == "user" && graphical {
+            let (name, uid) = (get("Name"), get("User"));
+            if !name.is_empty() && !uid.is_empty() {
+                return Some((name, uid));
+            }
         }
     }
     None
