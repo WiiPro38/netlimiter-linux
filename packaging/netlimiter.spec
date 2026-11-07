@@ -4,7 +4,7 @@
 %{!?_sysusersdir: %global _sysusersdir /usr/lib/sysusers.d}
 
 Name:           netlimiter
-Version:        1.0.0
+Version:        2.0.0
 Release:        1%{?dist}
 Summary:        Network limiter and monitor for Fedora
 
@@ -20,6 +20,11 @@ BuildRequires:  systemd-rpm-macros
 Requires:       nftables
 Requires:       iproute
 Requires:       iproute-tc
+Requires:       kmod
+Requires:       util-linux
+Requires:       systemd
+Requires:       polkit
+Requires:       dbus
 Requires:       python3-gobject
 Requires:       gtk4
 Requires:       libadwaita
@@ -80,11 +85,17 @@ install -m 644 packaging/90-netlimiter.preset %{buildroot}%{_presetdir}/90-netli
 %systemd_postun_with_restart netlimiter-daemon.service
 
 %changelog
-* Fri Nov 06 2026 Mohamed <ziramziram1994@gmail.com> - 1.0.0-1
+* Sat Nov 07 2026 Mohamed - 2.0.0-1
+- Strict speed limiting with tc (HTB + IFB), nftables only as fallback
+- Packet-level per-app counters (TCP and UDP)
+- Ubuntu/Kubuntu support (deb), snap path normalization
+- New GUI: run/stop button, animated empty state
+
+* Fri Nov 06 2026 Mohamed - 1.0.0-1
 - Strict speed limiting with tc (HTB + IFB); nftables only as fallback
 - Per-application packet-level traffic counters
 
-* Mon Nov 04 2024 Your Name <you@example.com> - 0.2.0-1
+* Mon Nov 04 2024 Mohamed - 0.2.0-1
 - Add interactive desktop notifications with block/allow/limit actions
 - Keep closed apps visible in the UI
 - Fix auto-block re-application after manual unblock
